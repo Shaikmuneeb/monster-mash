@@ -7,7 +7,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { InputManager } from './input'
 import { Monster, MonsterPool, VARIANT_STYLES, type MonsterVariant } from './monsters'
 import { World, WORLD_R } from './world'
-import { loadBest, saveBest, showRewardedAd } from './sdk'
+import { loadBest, saveBest } from './sdk'
 
 // ---------- Renderer (cinematic stack) ----------
 const canvas = document.getElementById('game') as HTMLCanvasElement
@@ -105,7 +105,6 @@ function updateParticles(dt: number) {
 const input = new InputManager()
 let running = false
 let dead = false
-let reviveUsed = false
 let score = 0
 let best = 0
 let hearts = 3
@@ -197,9 +196,7 @@ async function die() {
   running = false
   dead = true
   if (score > best) { best = score; await saveBest(score, best) }
-  document.getElementById('deathStats')!.textContent = `Score ${score} · Best ${best} · Artifacts ${(score - score % 500) / 500}`
-  const reviveBtn = document.getElementById('reviveBtn') as HTMLButtonElement
-  reviveBtn.style.display = reviveUsed ? 'none' : ''
+  document.getElementById('deathStats')!.textContent = `Score ${score} · Best ${best}`
   document.getElementById('deathScreen')!.classList.remove('hidden')
 }
 
@@ -350,7 +347,7 @@ function update(dt: number) {
   }
 
   world.updateArtifact(time)
-  world.updateParticles(hx, hz, time)
+  world.updateParticles(hx, hz, time, dt)
   updateParticles(dt)
 
   // camera follow (yaw is owned by right-mouse look / touch drag)
@@ -394,7 +391,6 @@ function resetGame() {
   hearts = 3
   score = 0
   invuln = 1
-  reviveUsed = false
   dead = false
   difficulty = 1
   maxAlive = 5
@@ -413,21 +409,6 @@ document.getElementById('retryBtn')!.addEventListener('click', () => {
   resetGame()
   running = true
 })
-document.getElementById('reviveBtn')!.addEventListener('click', async () => {
-  const watched = await showRewardedAd()
-  if (!watched && input.state.isTouch) {
-    // no fill on the platform: still allow revive so the session isn't stuck
-  }
-  reviveUsed = true
-  dead = false
-  hearts = Math.max(1, hearts)
-  heroHp = HERO_MAX
-  invuln = 2.5
-  for (const e of pool.all) if (e.active) pool.release(e)
-  document.getElementById('deathScreen')!.classList.add('hidden')
-  running = true
-})
-
 // ---------- Boot: async SDK init (runner-style), then best score ----------
 async function boot() {
   try {
