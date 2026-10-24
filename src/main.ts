@@ -8,6 +8,7 @@ import { InputManager } from './input'
 import { Monster, MonsterPool, VARIANT_STYLES, type MonsterVariant } from './monsters'
 import { World, WORLD_R } from './world'
 import { loadBest, saveBest } from './sdk'
+import { sfx } from './audio'
 
 // ---------- Renderer (cinematic stack) ----------
 const canvas = document.getElementById('game') as HTMLCanvasElement
@@ -116,6 +117,35 @@ let hitStop = 0
 let time = 0
 let spawnT = 0
 
+// ---------- Posture / parry / deathblow ----------
+let guarding = false
+let guardStart = -10
+let playerPosture = 0
+const PLAYER_POSTURE_MAX = 100
+let slowT = 0            // deathblow slow-motion remaining
+let camPulse = 0         // combat-clash camera zoom pulse
+
+// ---------- Phases & boss ----------
+let artifactsCollected = 0
+let phase = 1
+let boss: Monster | null = null
+let bossHp = 0
+const BOSS_MAX = 620
+let bossState: 'chase' | 'windup' | 'attack' | 'rest' = 'chase'
+let bossT = 0
+
+const hudPosture = document.getElementById('playerposture')!
+const bossWrap = document.getElementById('bosswrap')!
+const bossFill = document.getElementById('bossfill')!
+const bossPostureFill = document.getElementById('posturefill')!
+const bannerEl = document.getElementById('banner')!
+
+function showBanner(text: string, ms = 2600) {
+  bannerEl.textContent = text
+  bannerEl.classList.add('show')
+  setTimeout(() => bannerEl.classList.remove('show'), ms)
+}
+
 const hudHearts = document.getElementById('hearts')!
 const hudFill = document.getElementById('hullfill') as HTMLDivElement
 const hudScore = document.getElementById('score')!
@@ -149,7 +179,17 @@ let comboWindow = 0
 let shakeT = 0
 
 function heroAttack() {
-  if (heroAttackCd > 0 || hero.anim === 'attack') return
+  if (heroAttackCd > 0 || hero.anim === 'attack' || guarding) return
+  // cinematic DEATHBLOW takes priority over a normal swing
+  for (const e of pool.all) {
+    if (!e.active || e.stunT <= 0) continue
+    const d = Math.hypot(e.group.position.x - hero.group.position.x, e.group.position.z - hero.group.position.z)
+    if (d < 2.8) { void executeDeathblow(e); return }
+  }
+  if (boss && bossHp > 0 && boss.postureBroken) {
+    const d = Math.hypot(boss.group.position.x - hero.group.position.x, boss.group.position.z - hero.group.position.z)
+    if (d < 3.2) { void executeDeathblow(boss); return }
+  }
   comboStage = comboWindow > 0 ? ((comboStage % 3) + 1) as 1 | 2 | 3 : 1
   comboWindow = 1.2
   hero.comboStage = comboStage
@@ -163,49 +203,88 @@ function heroAttack() {
   }
 }
 
+/** Slow-motion cinematic finishing slash. */
+async function executeDeathblow(e: Monster) {
+  slowT = 1.1
+  camPulse = 1
+  shakeT = 0.6
+  hitStop = 0.05
+  sfx.deathblow()
+  hero.setAnim('attack')
+  hero.comboStage = 3
+  hero.faceTowards(e.group.position.x, e.group.position.z)
+  burst(e.group.position.x, 1.4, e.group.position.z, 30, 0xffe28a, 11)
+  e.posture = 0
+  e.stunT = 0
+  e.hp = 0
+  score += 250
+  const wasBoss = e === boss
+  if (wasBoss) {
+    bossHp = 0
+    killBoss()
+  } else {
+    pool.release(e)
+  }
+}
+
 function resolveHeroStrike() {
   const hx = hero.group.position.x, hz = hero.group.position.z
   const facing = hero.group.rotation.y
   const heavy = comboStage === 3
   const reach = heavy ? 4.0 : 3.4
-  for (const e of pool.all) {
-    if (!e.active) continue
+  sfx[heavy ? 'heavy' : 'slash']()
+  const hits = (e: Monster, isBoss: boolean) => {
     const dx = e.group.position.x - hx
     const dz = e.group.position.z - hz
     const d = Math.hypot(dx, dz)
-    if (d > reach) continue
+    if (d > reach) return
     const ang = Math.atan2(dx, dz)
     let diff = ang - facing
     while (diff > Math.PI) diff -= Math.PI * 2
     while (diff < -Math.PI) diff += Math.PI * 2
-    if (Math.abs(diff) > 1.25) continue
+    if (Math.abs(diff) > 1.25) return
 
     // blocking foes take chip damage and spark instead of flinching
     let dmg = hero.dmg * (heavy ? 2.2 : 1)
     if (e.anim === 'guard') {
       dmg *= 0.15
+      sfx.clang()
       burst(e.group.position.x, 1.5, e.group.position.z, 6, 0xd8e6ff, 4)
-      e.hp -= dmg
-      if (e.hp <= 0) {
-        pool.release(e)
-        score += 100
-      }
-      continue
+      e.addPosture(8)
+    } else {
+      e.addPosture(heavy ? 34 : 14)
+    }
+    if (!isBoss) e.hp -= dmg
+    else bossHp -= dmg
+
+    if (e.postureBroken && e.stunT <= 0) {
+      e.stunT = isBoss ? 2.4 : 2.0
+      e.setAnim('flinch')
+      sfx.postureBreak()
+      hitStop = 0.1
+      shakeT = Math.max(shakeT, 0.3)
     }
 
-    e.hp -= dmg
-    e.setAnim('flinch')
-    const kb = heavy ? 2.2 : 1.1
-    e.group.position.x += (dx / d) * kb
-    e.group.position.z += (dz / d) * kb
+    if (!isBoss && e.stunT <= 0) {
+      e.setAnim('flinch')
+      const kb = heavy ? 2.2 : 1.1
+      e.group.position.x += (dx / d) * kb
+      e.group.position.z += (dz / d) * kb
+    }
     burst(e.group.position.x, 1.4, e.group.position.z, heavy ? 14 : 8, VARIANT_STYLES[e.variant].accent)
-    if (e.hp <= 0) {
+    if (!isBoss && e.hp <= 0) {
       pool.release(e)
       score += 100
       burst(e.group.position.x, 1.2, e.group.position.z, 20, VARIANT_STYLES[e.variant].accent, 9)
       hitStop = 0.06
     }
   }
+
+  for (const e of pool.all) {
+    if (!e.active) continue
+    hits(e, false)
+  }
+  if (boss && bossHp > 0) hits(boss, true)
   if (heavy) { shakeT = 0.4; hitStop = 0.09 }
 }
 
@@ -214,12 +293,61 @@ function damageHero(amount: number) {
   heroHp -= amount
   invuln = 0.9
   hitStop = 0.08
+  shakeT = Math.max(shakeT, 0.25)
+  sfx.hurt()
   burst(hero.group.position.x, 1.5, hero.group.position.z, 10, 0xff5e8a)
   if (heroHp <= 0 && hearts > 0) {
     hearts--
     heroHp = HERO_MAX
     if (hearts === 0) void die()
   }
+}
+
+/** Enemy strike frame: perfect-parry, block, or take the hit. */
+function onEnemyStrike(e: Monster, amount: number) {
+  const hx = hero.group.position.x, hz = hero.group.position.z
+  const ex = e.group.position.x, ez = e.group.position.z
+
+  if (guarding) {
+    const mx = (hx + ex) / 2, mz = (hz + ez) / 2
+    if (time - guardStart < 0.3) {
+      // PERFECT PARRY: metal clash, sparks, attacker staggered
+      sfx.clang()
+      burst(mx, 1.5, mz, 18, 0xd8e6ff, 9)
+      e.addPosture(45)
+      e.setAnim('flinch')
+      e.lungeCd = 2.5
+      hitStop = 0.12
+      shakeT = Math.max(shakeT, 0.3)
+      camPulse = 1
+      playerPosture = Math.max(0, playerPosture - 12)
+      if (e.postureBroken) {
+        e.stunT = 2.0
+        sfx.postureBreak()
+        setQuest('⚡ Posture broken! Strike to execute a DEATHBLOW')
+      }
+      return
+    }
+    // regular guard: chip damage + posture build
+    sfx.guard()
+    burst(mx, 1.5, mz, 6, 0xd8e6ff, 4)
+    playerPosture = Math.min(PLAYER_POSTURE_MAX, playerPosture + 18)
+    e.addPosture(10)
+    if (playerPosture >= PLAYER_POSTURE_MAX) {
+      // guard crushed — you are staggered
+      playerPosture = 0
+      guarding = false
+      hero.setAnim('flinch')
+      invuln = 0.5
+      shakeT = Math.max(shakeT, 0.35)
+      sfx.postureBreak()
+      setQuest('Your guard was broken — recover!')
+    }
+    return
+  }
+
+  if (invuln > 0) return
+  damageHero(amount)
 }
 
 async function die() {
@@ -275,6 +403,7 @@ function doUse() {
         s.cleansed = true
         score += 300
         difficulty += 0.25
+        sfx.cleanse()
         burst(s.group.position.x, 2.4, s.group.position.z, 22, 0x39ff88, 8)
         world.spawnArtifactAt(s.group.position.x, s.group.position.z)
         setQuest('✦ Artifact unlocked! Claim it at the cleansed shrine')
@@ -286,9 +415,22 @@ function doUse() {
     score += 500
     difficulty += 0.35
     maxAlive = Math.min(12, maxAlive + 2)
+    artifactsCollected++
     burst(world.artifact.mesh.position.x, 1.6, world.artifact.mesh.position.z, 26, 0x7cf6b2, 10)
-    world.spawnArtifact()
-    setQuest('✦ The relic resurfaced — cleanse another shrine to reveal it')
+    if (artifactsCollected === 1) {
+      phase = 2
+      showBanner('PHASE II — THE CURSED SHRINE GROUNDS')
+      setQuest('Phase II: the woods grow restless… survive and gather the second relic')
+      setTimeout(() => updateEvents(-999), 100) // force an ambush wave
+    } else if (artifactsCollected === 2) {
+      phase = 3
+      showBanner('FINAL PHASE — THE WARLORD AWAKENS')
+      setQuest('☠ WARLORD ODAEMON has come for you. Parry his rage — strike when posture breaks!')
+      spawnBoss()
+    } else {
+      world.spawnArtifact()
+      setQuest('✦ The relic resurfaced — cleanse another shrine to reveal it')
+    }
   }
 }
 
@@ -317,16 +459,119 @@ function updateEvents(dt: number) {
   setTimeout(() => { world.removePillar(); if (running) setQuest('⚔ Cleanse the Cursed Shrines (E) to reveal artifacts') }, 8000)
 }
 
+// ---------- Boss: WARLORD ODAEMON ----------
+function spawnBoss() {
+  boss = new Monster('magma', BOSS_MAX, 5.4, 34)
+  boss.group.scale.setScalar(1.75)
+  boss.group.position.set(hero.group.position.x + 14, 0, hero.group.position.z + 14)
+  boss.maxPosture = 150
+  const aura = new THREE.PointLight(0xff7a2e, 10, 16)
+  aura.position.y = 2.5
+  boss.group.add(aura)
+  activeScene.add(boss.group)
+  bossHp = BOSS_MAX
+  bossState = 'chase'
+  bossT = 2
+  bossWrap.style.display = ''
+  sfx.postureBreak()
+}
+
+function killBoss() {
+  if (!boss) return
+  burst(boss.group.position.x, 2, boss.group.position.z, 40, 0xff7a2e, 12)
+  activeScene.remove(boss.group)
+  boss = null
+  bossWrap.style.display = 'none'
+  score += 1000
+  shakeT = 0.8
+  running = false
+  document.getElementById('victoryStats')!.textContent = `Final score ${score}`
+  document.getElementById('victoryScreen')!.classList.remove('hidden')
+}
+
+function updateBoss(dt: number) {
+  if (!boss || bossHp <= 0) return
+  bossT -= dt
+  const bx = boss.group.position.x, bz = boss.group.position.z
+  const dx = hx0() - bx, dz = hz0() - bz
+  const d = Math.hypot(dx, dz)
+
+  if (boss.anim === 'flinch' || boss.stunT > 0) {
+    if (boss.stunT > 0) {
+      boss.stunT -= dt
+      if (boss.animT > 0.32) boss.setAnim('flinch')
+      boss.animate(dt)
+      if (boss.stunT <= 0) { boss.posture = 0; boss.setAnim('idle') }
+      return
+    }
+    boss.animate(dt)
+    return
+  }
+  if (boss.anim === 'attack') {
+    if (boss.animate(dt)) onEnemyStrike(boss, boss.dmg)
+    if (boss.animT > 0.7) { boss.setAnim('idle'); bossState = 'rest'; bossT = 0.8 }
+    return
+  }
+
+  boss.faceTowards(bx + dx, bz + dz)
+  switch (bossState) {
+    case 'chase': {
+      boss.setAnim('walk')
+      const spd = boss.speed * (bossHp < BOSS_MAX * 0.5 ? 1.25 : 1) // enrage below 50%
+      boss.group.position.x += (dx / d) * spd * dt
+      boss.group.position.z += (dz / d) * spd * dt
+      if (d < 3.2) { bossState = 'windup'; bossT = 0.35 }
+      else if (bossT <= 0 && d > 8 && d < 18) { bossState = 'windup'; bossT = 0.5 } // lunge setup
+      break
+    }
+    case 'windup': {
+      boss.setAnim('idle')
+      if (d > 6) { // lunge dash into range
+        boss.lunging = 0.4
+        boss.group.position.x += (dx / d) * 26 * dt
+        boss.group.position.z += (dz / d) * 26 * dt
+        burst(bx, 0.5, bz, 3, 0xff7a2e, 3)
+      }
+      if (bossT <= 0) { bossState = 'attack'; boss.comboStage = 3; boss.setAnim('attack') }
+      break
+    }
+    case 'rest': {
+      boss.setAnim('idle')
+      if (bossT <= 0) { bossState = 'chase'; bossT = 1.2 }
+      break
+    }
+  }
+  boss.animate(dt)
+}
+
+function hx0() { return hero.group.position.x }
+function hz0() { return hero.group.position.z }
+
 // ---------- Update ----------
 function update(dt: number) {
   time += dt
+  if (slowT > 0) { slowT -= dt; dt *= 0.32 }   // cinematic deathblow slow-motion
   if (hitStop > 0) { hitStop -= dt; dt *= 0.15 }
   if (invuln > 0) invuln -= dt
   if (heroAttackCd > 0) heroAttackCd -= dt
   if (dodgeCd > 0) dodgeCd -= dt
   if (comboWindow > 0) comboWindow -= dt
+  if (camPulse > 0) camPulse = Math.max(0, camPulse - dt * 2)
 
-  const inp = input.poll()
+  const inp0 = input.poll()
+  const inp = inp0
+
+  // guard / parry stance (cannot move while guarding)
+  const wasGuarding = guarding
+  guarding = inp.guardHeld && dodgeT <= 0 && hero.anim !== 'attack' && hero.anim !== 'flinch'
+  if (guarding && !wasGuarding) guardStart = time
+  if (guarding) {
+    if (hero.anim !== 'guard') hero.setAnim('guard')
+  } else if (wasGuarding && hero.anim === 'guard') {
+    hero.setAnim('idle')
+  }
+  // player posture: builds on blocked hits, decays otherwise; full = guard crushed
+  if (!guarding) playerPosture = Math.max(0, playerPosture - 10 * dt)
 
   // dodge dash with generous i-frames
   if (inp.dodgePressed && dodgeCd <= 0) {
@@ -341,8 +586,8 @@ function update(dt: number) {
   // screen rotation: hold right mouse and drag
   camState.yaw += input.takeLookDelta()
 
-  // movement — screen-relative: W forward, S back, A left, D right
-  const mvLen = Math.hypot(inp.moveX, inp.moveY)
+  // movement — screen-relative: W forward, S back, A left, D right (locked while guarding)
+  const mvLen = guarding ? 0 : Math.hypot(inp.moveX, inp.moveY)
   if (mvLen > 0.05) {
     const speed = dashing ? 26 : hero.speed
     const yaw = camState.yaw
@@ -389,9 +634,18 @@ function update(dt: number) {
     const d = Math.hypot(dx, dz)
 
     if (e.lungeCd > 0) e.lungeCd -= dt
+    if (!e.postureBroken) e.addPosture(-5 * dt)
 
     if (e.anim === 'flinch') {
-      e.animate(dt)
+      if (e.stunT > 0) {
+        // posture-broken stagger: held open for a deathblow
+        e.stunT -= dt
+        if (e.animT > 0.32) e.setAnim('flinch')
+        e.animate(dt)
+        if (e.stunT <= 0) { e.posture = 0; e.setAnim('idle') }
+      } else {
+        e.animate(dt)
+      }
       continue
     }
     if (e.anim === 'guard') {
@@ -400,10 +654,11 @@ function update(dt: number) {
       continue
     }
     if (e.anim === 'attack') {
-      if (e.animate(dt)) damageHero(e.dmg)
+      if (e.animate(dt)) onEnemyStrike(e, e.dmg)
       if (e.animT > 0.7) e.setAnim('idle')
       continue
     }
+    // posture-broken stagger handled in the flinch branch above
 
     const lunging = e.lunging > 0
     if (lunging) e.lunging -= dt
@@ -444,15 +699,18 @@ function update(dt: number) {
   }
 
   updateEvents(dt)
+  updateBoss(dt)
   world.updateArtifact(time)
   world.updateShrines(time)
   world.updateParticles(hx, hz, time, dt)
   updateParticles(dt)
 
-  // camera follow + combat screen shake (yaw owned by right-mouse look)
-  const camTargetX = hx - Math.sin(camState.yaw) * camState.dist
-  const camTargetZ = hz - Math.cos(camState.yaw) * camState.dist
-  camPos.lerp(new THREE.Vector3(camTargetX, camState.height, camTargetZ), Math.min(1, dt * 4))
+  // camera follow + combat screen shake + clash zoom pulse (yaw owned by right-mouse look)
+  const effDist = camState.dist - camPulse * 4.5
+  const effHeight = camState.height - camPulse * 1.8
+  const camTargetX = hx - Math.sin(camState.yaw) * effDist
+  const camTargetZ = hz - Math.cos(camState.yaw) * effDist
+  camPos.lerp(new THREE.Vector3(camTargetX, effHeight, camTargetZ), Math.min(1, dt * (4 + camPulse * 8)))
   camera.position.copy(camPos)
   if (shakeT > 0) {
     shakeT -= dt
@@ -467,6 +725,11 @@ function update(dt: number) {
   hudHearts.textContent = '♥'.repeat(hearts) + '·'.repeat(3 - hearts)
   hudFill.style.width = `${Math.max(0, heroHp / HERO_MAX) * 100}%`
   hudScore.textContent = String(score)
+  hudPosture.style.width = `${Math.min(100, playerPosture)}%`
+  if (boss && bossHp > 0) {
+    bossFill.style.width = `${Math.max(0, bossHp / BOSS_MAX) * 100}%`
+    bossPostureFill.style.width = `${Math.min(100, boss.posture / boss.maxPosture * 100)}%`
+  }
 }
 
 // ---------- Loop ----------
@@ -500,6 +763,15 @@ function resetGame() {
   dead = false
   difficulty = 1
   maxAlive = 5
+  guarding = false
+  playerPosture = 0
+  slowT = 0
+  camPulse = 0
+  phase = 1
+  artifactsCollected = 0
+  bossWrap.style.display = 'none'
+  if (boss) { activeScene.remove(boss.group); boss = null }
+  showBanner('PHASE I — THE WHISPERING BAMBOO FOREST')
   for (const c of world.chests) { c.opened = false; c.lid.rotation.x = 0 }
   for (const e of pool.all) if (e.active) pool.release(e)
   setQuest('⚔ Cleanse the Cursed Shrines (E) to reveal the Ancient Artifact')
@@ -515,6 +787,11 @@ document.getElementById('startBtn')!.addEventListener('click', () => {
 })
 document.getElementById('retryBtn')!.addEventListener('click', () => {
   document.getElementById('deathScreen')!.classList.add('hidden')
+  resetGame()
+  running = true
+})
+document.getElementById('againBtn')!.addEventListener('click', () => {
+  document.getElementById('victoryScreen')!.classList.add('hidden')
   resetGame()
   running = true
 })

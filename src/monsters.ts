@@ -39,6 +39,16 @@ export class Monster {
   lungeCd = 0                  // aggressive lunge cooldown
   lunging = 0                  // lunge seconds remaining
 
+  // posture (guard gauge): parries and guarded hits build it; a full bar staggers
+  posture = 0
+  maxPosture = 100
+  stunT = 0                    // posture-broken stagger remaining
+
+  addPosture(n: number) {
+    this.posture = Math.max(0, Math.min(this.maxPosture, this.posture + n))
+  }
+  get postureBroken() { return this.posture >= this.maxPosture }
+
   private torso!: THREE.Group
   private arms: THREE.Group[] = []      // [left, right]
   private legs: THREE.Group[] = []      // [left, right]

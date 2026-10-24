@@ -35,6 +35,7 @@ export class World {
     this.buildGround()
     this.buildProps()
     this.buildForest()
+    this.buildSacred()
     this.buildMist()
     this.buildParticles()
     this.buildChests()
@@ -290,6 +291,97 @@ export class World {
     }
   }
 
+  private buildSacred() {
+    const m = new THREE.Matrix4()
+    const q = new THREE.Quaternion()
+    const pos = new THREE.Vector3()
+    const scl = new THREE.Vector3()
+    // ---- glowing stone lanterns (toro) along the stone path ----
+    const lanternMat = new THREE.MeshStandardMaterial({ color: 0x3d4046, roughness: 0.95, flatShading: true })
+    const flameMat = new THREE.MeshStandardMaterial({ color: 0xffc46b, emissive: 0xffa33e, emissiveIntensity: 1.8, roughness: 0.4 })
+    for (let i = 0; i < 10; i++) {
+      const g = new THREE.Group()
+      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.42, 0.5, 6), lanternMat)
+      base.position.y = 0.25
+      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 1.1, 6), lanternMat)
+      pillar.position.y = 1.0
+      const lightBox = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.45, 0.5), lanternMat)
+      lightBox.position.y = 1.75
+      const flame = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 8), flameMat)
+      flame.position.y = 1.75
+      const roof = new THREE.Mesh(new THREE.ConeGeometry(0.5, 0.35, 6), lanternMat)
+      roof.position.y = 2.1
+      roof.castShadow = true
+      g.add(base, pillar, lightBox, flame, roof)
+      const glow = new THREE.PointLight(0xffa33e, 3.5, 9)
+      glow.position.y = 1.8
+      g.add(glow)
+      const la = (i / 10) * Math.PI * 2
+      const lr = 3 + ((i * 2.4) % 26)
+      g.position.set(Math.cos(la) * lr, 0, Math.sin(la) * lr)
+      this.scene.add(g)
+    }
+
+    // ---- giant sacred torii gates spanning the stone path ----
+    const toriiMat = new THREE.MeshStandardMaterial({ color: 0x8a1c1c, roughness: 0.6, metalness: 0.2 })
+    for (let i = 0; i < 3; i++) {
+      const g = new THREE.Group()
+      const H = 9 + i * 1.5
+      for (const sx of [-1, 1]) {
+        const p = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.62, H, 8), toriiMat)
+        p.position.set(4.2 * sx, H / 2, 0)
+        p.castShadow = true
+        g.add(p)
+      }
+      const kasagi = new THREE.Mesh(new THREE.BoxGeometry(11.5, 0.55, 0.9), toriiMat)
+      kasagi.position.y = H
+      kasagi.rotation.z = 0.02
+      kasagi.castShadow = true
+      const nuki = new THREE.Mesh(new THREE.BoxGeometry(9.4, 0.42, 0.6), toriiMat)
+      nuki.position.y = H * 0.82
+      g.add(kasagi, nuki)
+      const pa = (i / 3) * Math.PI * 2 + 0.9
+      const pr = 10 + i * 8
+      g.position.set(Math.cos(pa) * pr, 0, Math.sin(pa) * pr)
+      g.rotation.y = pa + Math.PI / 2 // span across the spiral path
+      this.scene.add(g)
+    }
+
+    // ---- bamboo groves: tall thin culms in dense clusters ----
+    const culmGeo = new THREE.CylinderGeometry(0.07, 0.09, 7, 5)
+    culmGeo.translate(0, 3.5, 0)
+    const culmMat = new THREE.MeshStandardMaterial({ color: 0x3f6b34, roughness: 0.7 })
+    const leafGeo = new THREE.ConeGeometry(0.28, 1.0, 4)
+    leafGeo.translate(0, 0.5, 0)
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x55803c, roughness: 0.8, flatShading: true })
+    const N_CULM = 70
+    const culms = new THREE.InstancedMesh(culmGeo, culmMat, N_CULM)
+    const bLeaves = new THREE.InstancedMesh(leafGeo, leafMat, N_CULM * 2)
+    culms.instanceMatrix.setUsage(THREE.StaticDrawUsage)
+    let li = 0
+    for (let i = 0; i < N_CULM; i++) {
+      const grove = i % 4
+      const ga = (grove / 4) * Math.PI * 2 + 2.1
+      const gr = 34 + grove * 16
+      const a = ga + (Math.random() - 0.5) * 0.9
+      const r = gr + (Math.random() - 0.5) * 10
+      const s = 0.8 + Math.random() * 0.6
+      q.setFromEuler(new THREE.Euler((Math.random() - 0.5) * 0.12, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.12))
+      scl.set(s, s * (0.8 + Math.random() * 0.5), s)
+      pos.set(Math.cos(a) * r, 0, Math.sin(a) * r)
+      m.compose(pos, q, scl)
+      culms.setMatrixAt(i, m)
+      for (let k = 0; k < 2 && li < N_CULM * 2; k++, li++) {
+        q.setFromEuler(new THREE.Euler(Math.random() * 1.2, Math.random() * Math.PI * 2, Math.random() * 1.2))
+        pos.set(Math.cos(a) * r + (Math.random() - 0.5), 4.5 + Math.random() * 2, Math.sin(a) * r + (Math.random() - 0.5))
+        scl.setScalar(0.8 + Math.random() * 0.6)
+        m.compose(pos, q, scl)
+        bLeaves.setMatrixAt(li, m)
+      }
+    }
+    this.scene.add(culms, bLeaves)
+  }
+
   private buildMist() {
     // soft radial mist patches drifting low over the forest floor
     const cv = document.createElement('canvas')
@@ -361,7 +453,7 @@ export class World {
     const lGeo = new THREE.BufferGeometry()
     lGeo.setAttribute('position', new THREE.BufferAttribute(lPos, 3))
     this.leaves = { pts: new THREE.Points(lGeo, new THREE.PointsMaterial({
-      color: 0xd98c4a, size: 0.34, map: dotTex, transparent: true, opacity: 0.8,
+      color: 0xc0392b, size: 0.42, map: dotTex, transparent: true, opacity: 0.85,
       blending: THREE.NormalBlending, depthWrite: false,
     })), vel: lVel, geo: lGeo }
     this.leaves.pts.frustumCulled = false

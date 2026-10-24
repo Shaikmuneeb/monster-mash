@@ -6,12 +6,13 @@ export interface InputState {
   attackPressed: boolean   // edge-triggered, consumed by the game
   dodgePressed: boolean
   usePressed: boolean
+  guardHeld: boolean       // hold-to-block (F on desktop, BLOCK button on touch)
   isTouch: boolean
   /** accumulated horizontal look delta (radians) since last poll; consumed via takeLookDelta() */
 }
 
 export class InputManager {
-  state: InputState = { moveX: 0, moveY: 0, attackPressed: false, dodgePressed: false, usePressed: false, isTouch: false }
+  state: InputState = { moveX: 0, moveY: 0, attackPressed: false, dodgePressed: false, usePressed: false, guardHeld: false, isTouch: false }
   private keys = new Set<string>()
   private joyId: number | null = null
   private joyStart = { x: 0, y: 0 }
@@ -38,7 +39,13 @@ export class InputManager {
       if (k === ' ') { this.state.attackPressed = true; e.preventDefault() }
       if (k === 'shift') this.state.dodgePressed = true
       if (k === 'e') this.state.usePressed = true
+      if (k === 'f') this.state.guardHeld = true
       if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault()
+    })
+    window.addEventListener('keyup', (e) => {
+      const k = e.key.toLowerCase()
+      this.keys.delete(k)
+      if (k === 'f') this.state.guardHeld = false
     })
     window.addEventListener('keyup', (e) => this.keys.delete(e.key.toLowerCase()))
     // click-to-attack on desktop
@@ -106,6 +113,12 @@ export class InputManager {
     bindBtn('btnAttack', 'attackPressed')
     bindBtn('btnDodge', 'dodgePressed')
     bindBtn('btnUse', 'usePressed')
+    // hold-to-block button
+    const block = document.getElementById('btnBlock')!
+    block.addEventListener('pointerdown', (e) => { e.stopPropagation(); this.state.guardHeld = true })
+    const blockEnd = () => { this.state.guardHeld = false }
+    block.addEventListener('pointerup', blockEnd)
+    block.addEventListener('pointercancel', blockEnd)
   }
 
   /** Call once per frame; returns and clears edge triggers. */
@@ -123,6 +136,7 @@ export class InputManager {
     const out: InputState = {
       moveX: mx, moveY: my, isTouch: s.isTouch,
       attackPressed: s.attackPressed, dodgePressed: s.dodgePressed, usePressed: s.usePressed,
+      guardHeld: s.guardHeld,
     }
     s.attackPressed = s.dodgePressed = s.usePressed = false
     return out

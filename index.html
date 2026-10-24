@@ -79,6 +79,31 @@
       #desktopHint kbd {
         background: #232a4a; border-radius: 5px; padding: 2px 7px; font-family: inherit; font-size: 13px;
       }
+
+      /* ---------- Posture / boss / banner ---------- */
+      #posturewrap {
+        position: absolute; top: calc(48px + env(safe-area-inset-top)); left: 14px;
+        width: 170px; height: 6px; background: rgba(255,255,255,0.12); border-radius: 4px; overflow: hidden;
+      }
+      #playerposture { height: 100%; width: 0%; background: #ffe28a; border-radius: 4px; transition: width 0.15s; }
+      #bosswrap {
+        position: absolute; top: calc(12px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+        width: min(52vw, 460px); text-align: center; pointer-events: none;
+      }
+      #bossname { font-weight: 800; font-size: 15px; letter-spacing: 3px; color: #ff9e5e; text-shadow: 0 1px 4px #000; }
+      #bossbar {
+        margin-top: 4px; height: 12px; background: rgba(255,255,255,0.12); border-radius: 7px; overflow: hidden; position: relative;
+      }
+      #bossfill { height: 100%; width: 100%; background: linear-gradient(90deg,#b3123f,#ff7a2e); transition: width 0.2s; }
+      #posturefill {
+        position: absolute; bottom: 0; left: 0; height: 4px; width: 0%; background: #ffe28a; transition: width 0.1s;
+      }
+      #banner {
+        position: fixed; left: 0; right: 0; top: 34%; text-align: center; z-index: 8; pointer-events: none;
+        font-size: clamp(26px, 5vw, 44px); font-weight: 900; letter-spacing: 6px; color: #eef1ff;
+        text-shadow: 0 0 24px rgba(155,107,255,0.8), 0 2px 6px #000; opacity: 0; transition: opacity 0.5s;
+      }
+      #banner.show { opacity: 1; }
     </style>
   </head>
   <body>
@@ -93,11 +118,18 @@
         <div class="stat" id="score">0</div>
       </div>
       <div id="quest">⚔ Cleanse the Cursed Shrines (E) to reveal the Ancient Artifact</div>
+      <div id="bosswrap" style="display:none;">
+        <div id="bossname">WARLORD ODAEMON</div>
+        <div id="bossbar"><div id="bossfill"></div><div id="posturefill"></div></div>
+      </div>
     </div>
+    <div id="posturewrap"><div id="playerposture"></div></div>
+    <div id="banner"></div>
 
     <div id="touchui">
       <div id="joyBase"><div id="joyKnob"></div></div>
       <div id="actionBtns">
+        <div class="abtn" id="btnBlock" style="background:radial-gradient(circle at 35% 30%, #8ad7ff, #1b5a8a); box-shadow:0 0 18px rgba(90,180,255,0.5);">GUARD</div>
         <div class="abtn" id="btnUse">USE</div>
         <div class="abtn" id="btnDodge">DODGE</div>
         <div class="abtn" id="btnAttack">ATTACK</div>
@@ -107,7 +139,7 @@
     <div class="overlay" id="startScreen">
       <h1>MONSTER MASH</h1>
       <p>A neon-drenched monster realm awaits. Battle rival beasts, smash open loot chests, and recover the Ancient Artifacts hidden across the glowing wilds.</p>
-      <p id="desktopHint"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · Right-click hold + drag: rotate screen · <kbd>Space</kbd> attack · <kbd>Shift</kbd> dodge · <kbd>E</kbd> interact</p>
+      <p id="desktopHint"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · Right-click drag: rotate screen · <kbd>Space</kbd> attack · <kbd>F</kbd> guard/parry · <kbd>Shift</kbd> dodge · <kbd>E</kbd> interact</p>
       <button id="startBtn">ENTER THE REALM</button>
       <p id="bestScore" style="opacity:0.6;font-size:13px;"></p>
     </div>
@@ -116,6 +148,13 @@
       <h1 style="background:linear-gradient(90deg,#ff5e8a,#ff9e5e);-webkit-background-clip:text;background-clip:text;">DEFEATED</h1>
       <p id="deathStats"></p>
       <button id="retryBtn">TRY AGAIN</button>
+    </div>
+
+    <div class="overlay hidden" id="victoryScreen">
+      <h1 style="background:linear-gradient(90deg,#ffd97a,#7cf6b2);-webkit-background-clip:text;background-clip:text;">VICTORY</h1>
+      <p>The Warlord falls. The forest breathes again.</p>
+      <p id="victoryStats" style="opacity:0.8;"></p>
+      <button class="secondary" id="againBtn">PLAY AGAIN</button>
     </div>
 
     <script type="module" src="/src/main.ts"></script>
