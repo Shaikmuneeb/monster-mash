@@ -7,6 +7,7 @@ export interface InputState {
   dodgePressed: boolean
   usePressed: boolean
   isTouch: boolean
+  /** accumulated horizontal look delta (radians) since last poll; consumed via takeLookDelta() */
 }
 
 export class InputManager {
@@ -15,6 +16,16 @@ export class InputManager {
   private joyId: number | null = null
   private joyStart = { x: 0, y: 0 }
   private joyVec = { x: 0, y: 0 }
+  private looking = false
+  private lastLookX = 0
+  private lookDelta = 0
+
+  /** Accumulated right-mouse-drag yaw since last call (radians). */
+  takeLookDelta(): number {
+    const d = this.lookDelta
+    this.lookDelta = 0
+    return d
+  }
 
   constructor() {
     const isTouch = matchMedia('(pointer: coarse)').matches
@@ -32,7 +43,21 @@ export class InputManager {
     window.addEventListener('keyup', (e) => this.keys.delete(e.key.toLowerCase()))
     // click-to-attack on desktop
     window.addEventListener('mousedown', (e) => {
-      if (!this.state.isTouch && e.button === 0) this.state.attackPressed = true
+      if (this.state.isTouch) return
+      if (e.button === 0) this.state.attackPressed = true
+      if (e.button === 2) { this.looking = true; this.lastLookX = e.clientX }
+    })
+    window.addEventListener('mousemove', (e) => {
+      if (!this.looking) return
+      this.lookDelta += (e.clientX - this.lastLookX) * 0.006
+      this.lastLookX = e.clientX
+    })
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 2) this.looking = false
+    })
+    // keep the browser context menu out of the way of camera-drag
+    window.addEventListener('contextmenu', (e) => {
+      if (!this.state.isTouch) e.preventDefault()
     })
 
     if (isTouch) this.setupJoystick()

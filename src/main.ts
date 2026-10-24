@@ -267,15 +267,24 @@ function update(dt: number) {
   const dashing = dodgeT > 0
   if (dashing) dodgeT -= dt
 
-  // movement (camera-relative)
+  // screen rotation: hold right mouse and drag
+  camState.yaw += input.takeLookDelta()
+
+  // movement — screen-relative: W forward, S back, A left, D right
   const mvLen = Math.hypot(inp.moveX, inp.moveY)
   if (mvLen > 0.05) {
     const speed = dashing ? 26 : hero.speed
-    const wx = inp.moveX / Math.max(mvLen, 1) * mvLen
-    const wz = inp.moveY / Math.max(mvLen, 1) * mvLen
-    hero.group.position.x = THREE.MathUtils.clamp(hero.group.position.x + wx * speed * dt, -WORLD_R, WORLD_R)
-    hero.group.position.z = THREE.MathUtils.clamp(hero.group.position.z + wz * speed * dt, -WORLD_R, WORLD_R)
-    const targetYaw = Math.atan2(wx, wz)
+    const yaw = camState.yaw
+    const fx = Math.sin(yaw), fz = Math.cos(yaw)      // camera forward on the ground plane
+    const rx = -fz, rz = fx                            // camera right
+    const wx = (fx * -inp.moveY + rx * inp.moveX)
+    const wz = (fz * -inp.moveY + rz * inp.moveX)
+    const wl = Math.hypot(wx, wz) || 1
+    const nx = wx / wl * Math.min(mvLen, 1)
+    const nz = wz / wl * Math.min(mvLen, 1)
+    hero.group.position.x = THREE.MathUtils.clamp(hero.group.position.x + nx * speed * dt, -WORLD_R, WORLD_R)
+    hero.group.position.z = THREE.MathUtils.clamp(hero.group.position.z + nz * speed * dt, -WORLD_R, WORLD_R)
+    const targetYaw = Math.atan2(nx, nz)
     let dy = targetYaw - hero.group.rotation.y
     while (dy > Math.PI) dy -= Math.PI * 2
     while (dy < -Math.PI) dy += Math.PI * 2
@@ -344,9 +353,7 @@ function update(dt: number) {
   world.updateParticles(hx, hz, time)
   updateParticles(dt)
 
-  // camera follow
-  const tYaw = hero.group.rotation.y
-  camState.yaw += (tYaw - camState.yaw) * Math.min(1, dt * 2)
+  // camera follow (yaw is owned by right-mouse look / touch drag)
   const camTargetX = hx - Math.sin(camState.yaw) * camState.dist
   const camTargetZ = hz - Math.cos(camState.yaw) * camState.dist
   camPos.lerp(new THREE.Vector3(camTargetX, camState.height, camTargetZ), Math.min(1, dt * 4))
