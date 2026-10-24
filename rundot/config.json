@@ -1,0 +1,11 @@
+{
+  "gameTitle": "Monster Mash",
+  "description": "3D monster adventure: explore neon-lit realms, battle rival creatures, loot chests and collect ancient artifacts.",
+  "category": "adventure",
+  "orientation": "landscape",
+  "build": {
+    "outputDir": "dist",
+    "indexPath": "index.html"
+  },
+  "sdkVersion": "5.22.0"
+}
