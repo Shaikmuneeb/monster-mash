@@ -143,33 +143,62 @@ function spawnEnemies() {
   m.resetPose()
 }
 
-// ---------- Combat ----------
+// ---------- Combat: 3-hit combo (light, light, HEAVY finisher) ----------
+let comboStage: 1 | 2 | 3 = 1
+let comboWindow = 0
+let shakeT = 0
+
 function heroAttack() {
   if (heroAttackCd > 0 || hero.anim === 'attack') return
-  heroAttackCd = 0.55
+  comboStage = comboWindow > 0 ? ((comboStage % 3) + 1) as 1 | 2 | 3 : 1
+  comboWindow = 1.2
+  hero.comboStage = comboStage
+  heroAttackCd = comboStage === 3 ? 0.85 : 0.34
   hero.setAnim('attack')
+  // alert nearby foes: some raise a blocking stance
+  for (const e of pool.all) {
+    if (!e.active || e.anim === 'attack' || e.anim === 'guard') continue
+    const d = Math.hypot(e.group.position.x - hero.group.position.x, e.group.position.z - hero.group.position.z)
+    if (d < 4 && Math.random() < 0.3) e.setAnim('guard')
+  }
 }
 
 function resolveHeroStrike() {
   const hx = hero.group.position.x, hz = hero.group.position.z
   const facing = hero.group.rotation.y
+  const heavy = comboStage === 3
+  const reach = heavy ? 4.0 : 3.4
   for (const e of pool.all) {
     if (!e.active) continue
     const dx = e.group.position.x - hx
     const dz = e.group.position.z - hz
     const d = Math.hypot(dx, dz)
-    if (d > 3.4) continue
+    if (d > reach) continue
     const ang = Math.atan2(dx, dz)
     let diff = ang - facing
     while (diff > Math.PI) diff -= Math.PI * 2
     while (diff < -Math.PI) diff += Math.PI * 2
-    if (Math.abs(diff) > 1.2) continue
-    e.hp -= hero.dmg
+    if (Math.abs(diff) > 1.25) continue
+
+    // blocking foes take chip damage and spark instead of flinching
+    let dmg = hero.dmg * (heavy ? 2.2 : 1)
+    if (e.anim === 'guard') {
+      dmg *= 0.15
+      burst(e.group.position.x, 1.5, e.group.position.z, 6, 0xd8e6ff, 4)
+      e.hp -= dmg
+      if (e.hp <= 0) {
+        pool.release(e)
+        score += 100
+      }
+      continue
+    }
+
+    e.hp -= dmg
     e.setAnim('flinch')
-    // knockback
-    e.group.position.x += (dx / d) * 1.1
-    e.group.position.z += (dz / d) * 1.1
-    burst(e.group.position.x, 1.4, e.group.position.z, 8, VARIANT_STYLES[e.variant].accent)
+    const kb = heavy ? 2.2 : 1.1
+    e.group.position.x += (dx / d) * kb
+    e.group.position.z += (dz / d) * kb
+    burst(e.group.position.x, 1.4, e.group.position.z, heavy ? 14 : 8, VARIANT_STYLES[e.variant].accent)
     if (e.hp <= 0) {
       pool.release(e)
       score += 100
@@ -177,6 +206,7 @@ function resolveHeroStrike() {
       hitStop = 0.06
     }
   }
+  if (heavy) { shakeT = 0.4; hitStop = 0.09 }
 }
 
 function damageHero(amount: number) {
@@ -200,15 +230,20 @@ async function die() {
   document.getElementById('deathScreen')!.classList.remove('hidden')
 }
 
-// ---------- Interaction (chests + artifacts) ----------
-function nearestInteract(): { kind: 'chest' | 'artifact', dist: number } | null {
+// ---------- Interaction (chests + shrines + artifacts) ----------
+function nearestInteract(): { kind: 'chest' | 'artifact' | 'shrine', dist: number } | null {
   const hx = hero.group.position.x, hz = hero.group.position.z
-  let bestD = 3.2
-  let kind: 'chest' | 'artifact' | null = null
+  let bestD = 3.4
+  let kind: 'chest' | 'artifact' | 'shrine' | null = null
   for (const c of world.chests) {
     if (c.opened) continue
     const d = Math.hypot(c.group.position.x - hx, c.group.position.z - hz)
     if (d < bestD) { bestD = d; kind = 'chest' }
+  }
+  for (const s of world.shrines) {
+    if (s.cleansed) continue
+    const d = Math.hypot(s.group.position.x - hx, s.group.position.z - hz)
+    if (d < bestD) { bestD = d; kind = 'shrine' }
   }
   const art = world.artifact
   if (art && !art.collected) {
@@ -233,6 +268,19 @@ function doUse() {
         break
       }
     }
+  } else if (n.kind === 'shrine') {
+    for (const s of world.shrines) {
+      if (s.cleansed) continue
+      if (Math.hypot(s.group.position.x - hx, s.group.position.z - hz) < 3.4) {
+        s.cleansed = true
+        score += 300
+        difficulty += 0.25
+        burst(s.group.position.x, 2.4, s.group.position.z, 22, 0x39ff88, 8)
+        world.spawnArtifactAt(s.group.position.x, s.group.position.z)
+        setQuest('✦ Artifact unlocked! Claim it at the cleansed shrine')
+        break
+      }
+    }
   } else if (n.kind === 'artifact' && world.artifact) {
     world.artifact.collected = true
     score += 500
@@ -240,8 +288,33 @@ function doUse() {
     maxAlive = Math.min(12, maxAlive + 2)
     burst(world.artifact.mesh.position.x, 1.6, world.artifact.mesh.position.z, 26, 0x7cf6b2, 10)
     world.spawnArtifact()
-    setQuest('⚔ Next Ancient Artifact detected — follow the light pillar')
+    setQuest('✦ The relic resurfaced — cleanse another shrine to reveal it')
   }
+}
+
+// ---------- Dynamic events ----------
+let ambushT = 22 // first ambush arrives early to hook the player
+function updateEvents(dt: number) {
+  ambushT -= dt
+  if (ambushT > 0) return
+  ambushT = Math.max(28, 45 - difficulty * 4)
+
+  // spirits materialize in a ring around a light pillar near the player
+  const a = camState.yaw + Math.PI * (0.6 + Math.random() * 0.8)
+  const ex = THREE.MathUtils.clamp(hero.group.position.x + Math.cos(a) * 12, -WORLD_R + 5, WORLD_R - 5)
+  const ez = THREE.MathUtils.clamp(hero.group.position.z + Math.sin(a) * 12, -WORLD_R + 5, WORLD_R - 5)
+  world.spawnPillar(ex, ez)
+  const count = Math.min(pool.capacity, 4 + Math.floor(difficulty))
+  for (let i = 0; i < count; i++) {
+    const m = pool.acquire()
+    if (!m) break
+    const ra = (i / count) * Math.PI * 2
+    m.group.position.set(ex + Math.cos(ra) * 4.5, 0, ez + Math.sin(ra) * 4.5)
+    m.setAnim('walk')
+    m.resetPose()
+  }
+  setQuest('☠ AMBUSH! Forest spirits surround the dark pillar')
+  setTimeout(() => { world.removePillar(); if (running) setQuest('⚔ Cleanse the Cursed Shrines (E) to reveal artifacts') }, 8000)
 }
 
 // ---------- Update ----------
@@ -251,14 +324,15 @@ function update(dt: number) {
   if (invuln > 0) invuln -= dt
   if (heroAttackCd > 0) heroAttackCd -= dt
   if (dodgeCd > 0) dodgeCd -= dt
+  if (comboWindow > 0) comboWindow -= dt
 
   const inp = input.poll()
 
-  // dodge dash
+  // dodge dash with generous i-frames
   if (inp.dodgePressed && dodgeCd <= 0) {
-    dodgeCd = 1.6
-    dodgeT = 0.28
-    invuln = Math.max(invuln, 0.4)
+    dodgeCd = 1.3
+    dodgeT = 0.3
+    invuln = Math.max(invuln, 0.55)
     burst(hero.group.position.x, 0.6, hero.group.position.z, 8, 0x9b6bff, 4)
   }
   const dashing = dodgeT > 0
@@ -297,14 +371,15 @@ function update(dt: number) {
 
   // hero attack strike frame
   if (hero.anim === 'attack') {
-    if (hero.animate(1.35 * dt)) resolveHeroStrike()
-    if (hero.animT > 0.7) hero.setAnim('idle')
+    if (hero.animate(dt)) resolveHeroStrike()
+    const dur = comboStage === 3 ? 0.95 : 0.5
+    if (hero.animT > dur) hero.setAnim('idle')
   } else {
     hero.animate(dt)
   }
   hero.group.visible = !(invuln > 0 && Math.floor(time * 14) % 2 === 0)
 
-  // enemies
+  // enemies — patrol, chase, lunge, block
   spawnEnemies()
   const hx = hero.group.position.x, hz = hero.group.position.z
   for (const e of pool.all) {
@@ -313,8 +388,15 @@ function update(dt: number) {
     const dz = hz - e.group.position.z
     const d = Math.hypot(dx, dz)
 
+    if (e.lungeCd > 0) e.lungeCd -= dt
+
     if (e.anim === 'flinch') {
       e.animate(dt)
+      continue
+    }
+    if (e.anim === 'guard') {
+      e.animate(dt)
+      if (e.animT > 0.8) e.setAnim('idle')
       continue
     }
     if (e.anim === 'attack') {
@@ -323,17 +405,32 @@ function update(dt: number) {
       continue
     }
 
+    const lunging = e.lunging > 0
+    if (lunging) e.lunging -= dt
+
     if (d < 2.3) {
       e.faceTowards(hx, hz)
       e.setAnim('attack')
     } else if (d < 20) {
       e.faceTowards(hx, hz)
-      e.setAnim('walk')
-      e.group.position.x += (dx / d) * e.speed * difficulty * dt
-      e.group.position.z += (dz / d) * e.speed * difficulty * dt
+      // aggressive variants (yokai) lunge from mid-range
+      if (e.variant === 'electric' && e.lungeCd <= 0 && d > 5 && d < 10) {
+        e.lungeCd = 3.5
+        e.lunging = 0.38
+        e.setAnim('walk')
+      }
+      const spd = e.speed * difficulty * (lunging ? 4.2 : 1)
+      e.group.position.x += (dx / d) * spd * dt
+      e.group.position.z += (dz / d) * spd * dt
+      if (!lunging) e.setAnim('walk')
     } else {
-      // wander
-      if (e.animT > 2.5) { e.setAnim(Math.random() < 0.5 ? 'idle' : 'walk'); e.group.rotation.y = Math.random() * Math.PI * 2 }
+      // patrol
+      e.aiT -= dt
+      if (e.aiT <= 0) {
+        e.aiT = 1.5 + Math.random() * 2.5
+        e.setAnim(Math.random() < 0.5 ? 'idle' : 'walk')
+        e.group.rotation.y = Math.random() * Math.PI * 2
+      }
       const a = e.group.rotation.y
       e.group.position.x += Math.sin(a) * e.speed * 0.4 * dt
       e.group.position.z += Math.cos(a) * e.speed * 0.4 * dt
@@ -346,15 +443,24 @@ function update(dt: number) {
     if (c.opened && c.lid.rotation.x > -2.0) c.lid.rotation.x -= dt * 5
   }
 
+  updateEvents(dt)
   world.updateArtifact(time)
+  world.updateShrines(time)
   world.updateParticles(hx, hz, time, dt)
   updateParticles(dt)
 
-  // camera follow (yaw is owned by right-mouse look / touch drag)
+  // camera follow + combat screen shake (yaw owned by right-mouse look)
   const camTargetX = hx - Math.sin(camState.yaw) * camState.dist
   const camTargetZ = hz - Math.cos(camState.yaw) * camState.dist
   camPos.lerp(new THREE.Vector3(camTargetX, camState.height, camTargetZ), Math.min(1, dt * 4))
   camera.position.copy(camPos)
+  if (shakeT > 0) {
+    shakeT -= dt
+    const s = shakeT * 12
+    camera.position.x += (Math.random() - 0.5) * s
+    camera.position.y += (Math.random() - 0.5) * s * 0.6
+    camera.position.z += (Math.random() - 0.5) * s
+  }
   camera.lookAt(hx, 1.8, hz)
 
   // HUD
@@ -396,7 +502,10 @@ function resetGame() {
   maxAlive = 5
   for (const c of world.chests) { c.opened = false; c.lid.rotation.x = 0 }
   for (const e of pool.all) if (e.active) pool.release(e)
-  setQuest('⚔ Quest: Collect the Ancient Artifact')
+  setQuest('⚔ Cleanse the Cursed Shrines (E) to reveal the Ancient Artifact')
+  world.removePillar()
+  world.clearArtifact()
+  for (const s of world.shrines) s.cleansed = false
 }
 
 document.getElementById('startBtn')!.addEventListener('click', () => {

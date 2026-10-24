@@ -21,9 +21,11 @@ export interface Artifact {
 export class World {
   scene = new THREE.Scene()
   private spores!: THREE.Points
-  private embers!: THREE.Points
+  private leaves!: { pts: THREE.Points; vel: Float32Array; geo: THREE.BufferGeometry }
   private mist: THREE.Mesh[] = []
   chests: Chest[] = []
+  shrines: { group: THREE.Group; orb: THREE.Mesh; cleansed: boolean }[] = []
+  ambushPillar: THREE.Mesh | null = null
   artifact: Artifact | null = null
   private artifactCount = 0
 
@@ -36,7 +38,7 @@ export class World {
     this.buildMist()
     this.buildParticles()
     this.buildChests()
-    this.spawnArtifact()
+    this.buildShrines()
   }
 
   private buildSkyAndFog() {
@@ -75,22 +77,28 @@ export class World {
   }
 
   private buildGround() {
-    const g = new THREE.Mesh(
-      new THREE.CircleGeometry(WORLD_R + 30, 48),
-      new THREE.MeshStandardMaterial({ color: 0x0f1c14, roughness: 0.95 }),
-    )
+    // mossy terrain: dark forest floor with organic vertex-colored patches
+    const geo = new THREE.CircleGeometry(WORLD_R + 30, 64)
+    const pos = geo.attributes.position
+    const colors = new Float32Array(pos.count * 3)
+    const moss = new THREE.Color(0x12291a)
+    const dark = new THREE.Color(0x0b1810)
+    const lichen = new THREE.Color(0x1c3524)
+    const c = new THREE.Color()
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i)
+      // two-octave value noise (cheap, deterministic)
+      const n =
+        Math.sin(x * 0.11) * Math.cos(y * 0.13) +
+        Math.sin(x * 0.31 + 1.7) * Math.cos(y * 0.27 + 0.4) * 0.5
+      c.copy(n > 0.35 ? lichen : n > -0.3 ? moss : dark)
+      colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+    const g = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 }))
     g.rotation.x = -Math.PI / 2
     g.receiveShadow = true
     this.scene.add(g)
-
-    // faint neon grid ring paths
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0x39ff88, transparent: true, opacity: 0.05, side: THREE.DoubleSide })
-    for (const r of [40, 80, 120]) {
-      const ring = new THREE.Mesh(new THREE.RingGeometry(r - 0.4, r, 96), ringMat)
-      ring.rotation.x = -Math.PI / 2
-      ring.position.y = 0.02
-      this.scene.add(ring)
-    }
   }
 
   private buildProps() {
@@ -165,8 +173,18 @@ export class World {
     const scl = new THREE.Vector3()
     const up = new THREE.Vector3(0, 1, 0)
     for (let i = 0; i < N_PINE; i++) {
-      const a = Math.random() * Math.PI * 2
-      const r = 14 + Math.random() * (WORLD_R - 10)
+      // dense clusters: 60% of pines gather around grove centers, the rest scatter
+      let a: number, r: number
+      if (i % 5 < 3) {
+        const grove = Math.floor(i / 5) % 7
+        const ga = (grove / 7) * Math.PI * 2 + 0.4
+        const gr = 24 + (grove % 3) * 30
+        a = ga + (Math.random() - 0.5) * 0.8
+        r = gr + (Math.random() - 0.5) * 14
+      } else {
+        a = Math.random() * Math.PI * 2
+        r = 14 + Math.random() * (WORLD_R - 10)
+      }
       pos.set(Math.cos(a) * r, 0, Math.sin(a) * r)
       const s = 1.3 + Math.random() * 2.2
       scl.set(s, s * (0.85 + Math.random() * 0.4), s)
@@ -175,6 +193,55 @@ export class World {
       pines.setMatrixAt(i, m)
     }
     this.scene.add(pines)
+
+    // ---- winding stone path: flat stones spiraling from the center outward ----
+    const stoneGeo = new THREE.CylinderGeometry(0.55, 0.62, 0.12, 7)
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x3a4048, roughness: 1, flatShading: true })
+    const pathCount = 90
+    const path = new THREE.InstancedMesh(stoneGeo, stoneMat, pathCount)
+    path.receiveShadow = true
+    let px = 0, pz = 0, pa = 0
+    for (let i = 0; i < pathCount; i++) {
+      pa += 0.16 + Math.random() * 0.05
+      const pr = 3 + pa * 2.4
+      px = Math.cos(pa) * pr
+      pz = Math.sin(pa) * pr
+      q.setFromEuler(new THREE.Euler(0, Math.random() * Math.PI, 0))
+      scl.set(0.8 + Math.random() * 0.5, 1, 0.8 + Math.random() * 0.5)
+      pos.set(px + (Math.random() - 0.5) * 0.8, 0.02, pz + (Math.random() - 0.5) * 0.8)
+      m.compose(pos, q, scl)
+      path.setMatrixAt(i, m)
+    }
+    this.scene.add(path)
+
+    // ---- organic ground foliage: ferns + moss bumps ----
+    const fernGeo = new THREE.ConeGeometry(0.4, 0.7, 5)
+    fernGeo.translate(0, 0.3, 0)
+    const fernMat = new THREE.MeshStandardMaterial({ color: 0x1d4a2a, roughness: 0.9, flatShading: true })
+    const bumpGeo = new THREE.IcosahedronGeometry(0.3, 0)
+    const bumpMat = new THREE.MeshStandardMaterial({ color: 0x24422c, roughness: 1, flatShading: true })
+    const N_FERN = 130
+    const ferns = new THREE.InstancedMesh(fernGeo, fernMat, N_FERN)
+    const bumps = new THREE.InstancedMesh(bumpGeo, bumpMat, 80)
+    for (let i = 0; i < N_FERN; i++) {
+      const fa = Math.random() * Math.PI * 2
+      const fr = 6 + Math.random() * (WORLD_R - 4)
+      const s = 0.6 + Math.random() * 1.3
+      q.setFromAxisAngle(up, Math.random() * Math.PI * 2)
+      scl.set(s, s, s)
+      pos.set(Math.cos(fa) * fr, 0, Math.sin(fa) * fr)
+      m.compose(pos, q, scl)
+      ferns.setMatrixAt(i, m)
+      if (i < 80) {
+        const ba = Math.random() * Math.PI * 2
+        const br = 8 + Math.random() * (WORLD_R - 8)
+        scl.setScalar(0.5 + Math.random())
+        pos.set(Math.cos(ba) * br, 0.1, Math.sin(ba) * br)
+        m.compose(pos, q, scl)
+        bumps.setMatrixAt(i, m)
+      }
+    }
+    this.scene.add(ferns, bumps)
 
     // ---- ancient twisted trees (landmark silhouettes, individually crafted) ----
     const barkMat = new THREE.MeshStandardMaterial({ color: 0x241a28, roughness: 1, flatShading: true })
@@ -251,51 +318,81 @@ export class World {
   }
 
   private buildParticles() {
-    // floating magical spores (ambient field around the player)
-    const SN = 260
+    // soft round sprite so particles never render as harsh neon squares
+    const cv = document.createElement('canvas')
+    cv.width = cv.height = 64
+    const c2 = cv.getContext('2d')!
+    const grad = c2.createRadialGradient(32, 32, 2, 32, 32, 30)
+    grad.addColorStop(0, 'rgba(255,255,255,1)')
+    grad.addColorStop(0.4, 'rgba(255,255,255,0.55)')
+    grad.addColorStop(1, 'rgba(255,255,255,0)')
+    c2.fillStyle = grad
+    c2.fillRect(0, 0, 64, 64)
+    const dotTex = new THREE.CanvasTexture(cv)
+
+    // fireflies hovering low over the moss
+    const SN = 140
     const sPos = new Float32Array(SN * 3)
     for (let i = 0; i < SN; i++) {
       sPos[i * 3] = (Math.random() - 0.5) * 90
-      sPos[i * 3 + 1] = Math.random() * 12
+      sPos[i * 3 + 1] = 0.4 + Math.random() * 2.6
       sPos[i * 3 + 2] = (Math.random() - 0.5) * 90
     }
     const sGeo = new THREE.BufferGeometry()
     sGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3))
     this.spores = new THREE.Points(sGeo, new THREE.PointsMaterial({
-      color: 0xd7ff8a, size: 0.34, transparent: true, opacity: 0.85,
-      blending: THREE.AdditiveBlending, depthWrite: false,
+      color: 0xd7ff8a, size: 0.5, map: dotTex, transparent: true, opacity: 0.9,
+      blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
     }))
     this.scene.add(this.spores)
 
-    // rising embers near the ground (magma mood)
-    const EN = 160
-    const ePos = new Float32Array(EN * 3)
-    for (let i = 0; i < EN; i++) {
-      ePos[i * 3] = (Math.random() - 0.5) * 100
-      ePos[i * 3 + 1] = Math.random() * 6
-      ePos[i * 3 + 2] = (Math.random() - 0.5) * 100
+    // gentle falling autumn leaves, drifting sideways
+    const LN = 90
+    const lPos = new Float32Array(LN * 3)
+    const lVel = new Float32Array(LN * 3)
+    for (let i = 0; i < LN; i++) {
+      lPos[i * 3] = (Math.random() - 0.5) * 80
+      lPos[i * 3 + 1] = Math.random() * 9
+      lPos[i * 3 + 2] = (Math.random() - 0.5) * 80
+      lVel[i * 3] = (Math.random() - 0.5) * 0.4
+      lVel[i * 3 + 1] = -(0.3 + Math.random() * 0.4)
+      lVel[i * 3 + 2] = (Math.random() - 0.5) * 0.4
     }
-    const eGeo = new THREE.BufferGeometry()
-    eGeo.setAttribute('position', new THREE.BufferAttribute(ePos, 3))
-    this.embers = new THREE.Points(eGeo, new THREE.PointsMaterial({
-      color: 0xff7a2e, size: 0.2, transparent: true, opacity: 0.85,
-      blending: THREE.AdditiveBlending, depthWrite: false,
-    }))
-    this.scene.add(this.embers)
+    const lGeo = new THREE.BufferGeometry()
+    lGeo.setAttribute('position', new THREE.BufferAttribute(lPos, 3))
+    this.leaves = { pts: new THREE.Points(lGeo, new THREE.PointsMaterial({
+      color: 0xd98c4a, size: 0.34, map: dotTex, transparent: true, opacity: 0.8,
+      blending: THREE.NormalBlending, depthWrite: false,
+    })), vel: lVel, geo: lGeo }
+    this.leaves.pts.frustumCulled = false
+    this.scene.add(this.leaves.pts)
   }
 
-  /** Keep particle fields centered on the player; drift mist patches. */
+  /** Keep particle fields centered on the player; drift mist and fall leaves. */
   updateParticles(px: number, pz: number, t: number, dt = 0) {
-    for (const [pts, speed] of [
-      [this.spores, 0.5], [this.embers, 1.4],
-    ] as const) {
-      pts.position.set(
-        Math.round(px / 90) * 90 + Math.sin(t * speed * 0.3) * 2,
-        0,
-        Math.round(pz / 90) * 90,
-      )
-      pts.rotation.y = t * 0.01 * speed
+    this.spores.position.set(
+      Math.round(px / 90) * 90,
+      0,
+      Math.round(pz / 90) * 90,
+    )
+    this.spores.rotation.y = t * 0.005
+
+    // falling leaves wrap around in a box centered on the player
+    const lv = this.leaves
+    const arr = lv.geo.attributes.position.array as Float32Array
+    const n = arr.length / 3
+    for (let i = 0; i < n; i++) {
+      arr[i * 3] += (lv.vel[i * 3] + Math.sin(t * 1.3 + i) * 0.3) * dt
+      arr[i * 3 + 1] += lv.vel[i * 3 + 1] * dt
+      arr[i * 3 + 2] += lv.vel[i * 3 + 2] * dt
+      if (arr[i * 3 + 1] < 0.1) {
+        arr[i * 3] = px + (Math.random() - 0.5) * 80
+        arr[i * 3 + 1] = 8 + Math.random() * 3
+        arr[i * 3 + 2] = pz + (Math.random() - 0.5) * 80
+      }
     }
+    lv.geo.attributes.position.needsUpdate = true
+
     for (let i = 0; i < this.mist.length; i++) {
       const p = this.mist[i]
       p.rotation.z += dt * 0.02 * (i % 2 === 0 ? 1 : -1)
@@ -332,15 +429,84 @@ export class World {
     }
   }
 
-  spawnArtifact() {
+  private buildShrines() {
+    // cursed torii shrines: cleanse (E) to unlock the ancient artifact
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x2c2c34, roughness: 0.9, flatShading: true })
+    for (let i = 0; i < 2; i++) {
+      const g = new THREE.Group()
+      for (const sx of [-1, 1]) {
+        const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.28, 3.4, 7), stoneMat)
+        pillar.position.set(1.2 * sx, 1.7, 0)
+        pillar.castShadow = true
+        g.add(pillar)
+      }
+      const lintel = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.28, 0.5), stoneMat)
+      lintel.position.y = 3.4
+      lintel.rotation.z = 0.04
+      lintel.castShadow = true
+      g.add(lintel)
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(2.9, 0.2, 0.4), stoneMat)
+      beam.position.y = 2.9
+      g.add(beam)
+      const orb = new THREE.Mesh(
+        new THREE.SphereGeometry(0.3, 10, 10),
+        new THREE.MeshStandardMaterial({ color: 0x9b6bff, emissive: 0x9b6bff, emissiveIntensity: 1.6, roughness: 0.3 }),
+      )
+      orb.position.y = 2.35
+      g.add(orb)
+      const a = (i / 2) * Math.PI * 2 + 1.9
+      const r = 30 + i * 34
+      g.position.set(Math.cos(a) * r, 0, Math.sin(a) * r)
+      g.rotation.y = Math.random() * Math.PI * 2
+      this.scene.add(g)
+      this.shrines.push({ group: g, orb, cleansed: false })
+    }
+  }
+
+  /** Glowing pillar marking an ambush wave center (or a shrine event). */
+  spawnPillar(x: number, z: number, color = 0x9b6bff) {
+    this.removePillar()
+    this.ambushPillar = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.4, 1.4, 50, 16, 1, true),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }),
+    )
+    this.ambushPillar.position.set(x, 25, z)
+    this.scene.add(this.ambushPillar)
+  }
+
+  removePillar() {
+    if (this.ambushPillar) {
+      this.scene.remove(this.ambushPillar)
+      this.ambushPillar.geometry.dispose()
+      this.ambushPillar = null
+    }
+  }
+
+  clearArtifact() {
     if (this.artifact) {
       this.scene.remove(this.artifact.mesh, this.artifact.beacon)
       this.artifact.mesh.geometry.dispose()
+      this.artifact = null
     }
-    this.artifactCount++
+  }
+
+  spawnArtifact() {
+    // artifact materializes at the last cleansed shrine (falls back to a random spot)
+    const s = this.shrines.find(sh => sh.cleansed)
     const a = Math.random() * Math.PI * 2
     const r = 40 + Math.random() * (WORLD_R - 60)
-    const x = Math.cos(a) * r, z = Math.sin(a) * r
+    const x = s ? s.group.position.x : Math.cos(a) * r
+    const z = s ? s.group.position.z : Math.sin(a) * r
+    this.spawnArtifactAt(x, z)
+  }
+
+  spawnArtifactAt(x: number, z: number) {
+    if (this.artifact) {
+      this.scene.remove(this.artifact.mesh, this.artifact.beacon)
+      this.artifact.mesh.geometry.dispose()
+      this.artifact = null
+    }
+    this.artifactCount++
 
     const hue = [0x39ff88, 0x9b6bff, 0xff7a2e][this.artifactCount % 3]
     const mesh = new THREE.Mesh(
@@ -355,6 +521,16 @@ export class World {
     beacon.position.set(x, 30, z)
     this.scene.add(mesh, beacon)
     this.artifact = { mesh, beacon, collected: false }
+  }
+
+  updateShrines(t: number) {
+    for (const s of this.shrines) {
+      s.orb.rotation.y = t * (s.cleansed ? 2.5 : 0.6)
+      s.orb.position.y = 2.35 + Math.sin(t * (s.cleansed ? 3 : 1.2)) * 0.12
+      const mat = s.orb.material as THREE.MeshStandardMaterial
+      mat.emissive.setHex(s.cleansed ? 0x39ff88 : 0x9b6bff)
+      mat.color.setHex(s.cleansed ? 0x39ff88 : 0x9b6bff)
+    }
   }
 
   updateArtifact(t: number) {
